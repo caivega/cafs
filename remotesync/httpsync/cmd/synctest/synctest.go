@@ -30,6 +30,9 @@ func main() {
 	preload := ""
 	flag.StringVar(&preload, "i", preload, "input file to load")
 
+	dataDir := "."
+	flag.StringVar(&dataDir, "d", dataDir, "data dir for upload file")
+
 	flag.BoolVar(&remotesync.LoggingEnabled, "enable-remotesync-logging", remotesync.LoggingEnabled,
 		"enables detailed logging from the remotesync algorithm")
 
@@ -39,5 +42,5 @@ func main() {
 	if preload != "" {
 		list = append(list, preload)
 	}
-	cmd.Service(addr, list)
+	cmd.Service(addr, dataDir, list)
 }
