@@ -21,15 +21,19 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
 	"github.com/indyjo/cafs"
 	"github.com/indyjo/cafs/remotesync"
 	"github.com/indyjo/cafs/remotesync/shuffle"
-	"io"
-	"io/ioutil"
-	"net/http"
-	"sync"
-	"time"
 )
 
 // Struct FileHandler implements the http.Handler interface and serves a file over HTTP.
@@ -183,4 +187,74 @@ func SyncFrom(ctx context.Context, storage cafs.FileStorage, client *http.Client
 	}
 	file, err = builder.ReconstructFileFromRequestedChunks(res.Body)
 	return
+}
+
+func SyncFile(fileStorage cafs.FileStorage, source string) error {
+	log.Printf("Sync from %v", source)
+	if file, err := SyncFrom(context.Background(), fileStorage, http.DefaultClient, source, "synced from "+source); err != nil {
+		return err
+	} else {
+		log.Printf("Successfully received %v (%v bytes)", file.Key(), file.Size())
+		file.Dispose()
+	}
+	return nil
+}
+
+func SaveFile(storage cafs.FileStorage, hash string, path string) error {
+	key, err := cafs.ParseKey(hash)
+	if err != nil {
+		return err
+	}
+	f, err := storage.Get(key)
+	if err != nil {
+		return err
+	}
+	log.Printf("Load data: %v (chunked: %v, %v chunks)", path, f.IsChunked(), f.NumChunks())
+
+	_, err = os.Stat(path)
+	if err == nil {
+		return errors.New(path + " exists")
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	tf, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer tf.Close()
+
+	rf := f.Open()
+	defer rf.Close()
+	if n, err := io.Copy(tf, rf); err != nil {
+		return err
+	} else {
+		log.Printf("Write file: %v (%v bytes, chunked: %v, %v chunks)", path, n, f.IsChunked(), f.NumChunks())
+	}
+	return nil
+}
+
+func LoadFile(storage cafs.FileStorage, path string) (cafs.File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	tmp := storage.Create(path)
+	defer tmp.Dispose()
+	n, err := io.Copy(tmp, f)
+	if err != nil {
+		return nil, fmt.Errorf("error after copying %v bytes: %v", n, err)
+	}
+
+	err = tmp.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	file := tmp.File()
+	log.Printf("Read file: %v (%v, %v bytes, chunked: %v, %v chunks)", path, file.Key().String(), n, file.IsChunked(), file.NumChunks())
+
+	return file, nil
 }

@@ -17,23 +17,11 @@
 package main
 
 import (
-	"context"
 	"flag"
-	"fmt"
-	"github.com/indyjo/cafs"
-	"github.com/indyjo/cafs/ram"
-	"github.com/indyjo/cafs/remotesync"
-	"github.com/indyjo/cafs/remotesync/httpsync"
-	"io"
-	"log"
-	"math/rand"
-	"net/http"
-	"os"
-	"runtime/pprof"
-)
 
-var storage cafs.FileStorage = ram.NewRamStorage(1 << 30)
-var fileHandlers = make(map[string]*httpsync.FileHandler)
+	"github.com/indyjo/cafs/remotesync"
+	"github.com/indyjo/cafs/remotesync/httpsync/cmd"
+)
 
 func main() {
 	addr := ":8080"
@@ -47,147 +35,9 @@ func main() {
 
 	flag.Parse()
 
+	list := []string{}
 	if preload != "" {
-		if err := loadFile(storage, preload); err != nil {
-			log.Fatalf("Error loading '[%v]: %v", preload, err)
-		}
+		list = append(list, preload)
 	}
-
-	http.HandleFunc("/load", handleLoad)
-	http.HandleFunc("/save", handleSave)
-	http.HandleFunc("/sync", handleSyncFrom)
-	http.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
-		storage.DumpStatistics(cafs.NewWriterPrinter(w))
-	})
-	http.HandleFunc("/stackdump", func(w http.ResponseWriter, r *http.Request) {
-		name := r.FormValue("name")
-		if len(name) == 0 {
-			name = "goroutine"
-		}
-		profile := pprof.Lookup(name)
-		if profile == nil {
-			_, _ = w.Write([]byte("No such profile"))
-			return
-		}
-		err := profile.WriteTo(w, 1)
-		if err != nil {
-			log.Printf("Error in profile.WriteTo: %v\n", err)
-		}
-	})
-
-	err := http.ListenAndServe(addr, nil)
-	if err != nil {
-		log.Fatalf("Error in ListenAndServe: %v", err)
-	}
-}
-
-func loadFile(storage cafs.FileStorage, path string) (err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return
-	}
-
-	tmp := storage.Create(path)
-	defer tmp.Dispose()
-	n, err := io.Copy(tmp, f)
-	if err != nil {
-		return fmt.Errorf("error after copying %v bytes: %v", n, err)
-	}
-
-	err = tmp.Close()
-	if err != nil {
-		return
-	}
-
-	file := tmp.File()
-	defer file.Dispose()
-	log.Printf("Read file: %v (%v bytes, chunked: %v, %v chunks)", path, n, file.IsChunked(), file.NumChunks())
-
-	printer := log.New(os.Stderr, "", log.LstdFlags)
-	handler := httpsync.NewFileHandlerFromFile(file, rand.Perm(256)).WithPrinter(printer)
-	fileHandlers[file.Key().String()] = handler
-
-	path = fmt.Sprintf("/file/%v", file.Key().String()[:16])
-	http.Handle(path, handler)
-	log.Printf("  serving under %v", path)
-	return
-}
-
-func handleLoad(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-		return
-	}
-	path := r.FormValue("path")
-	if err := loadFile(storage, path); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-func handleSave(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-		return
-	}
-	hash := r.FormValue("hash")
-	path := r.FormValue("path")
-
-	key, err := cafs.ParseKey(hash)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	f, err := storage.Get(key)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("Load data: %v (chunked: %v, %v chunks)", path, f.IsChunked(), f.NumChunks())
-
-	_, err = os.Stat(path)
-	if err == nil {
-		http.Error(w, path + " exists", http.StatusInternalServerError)
-		return
-	}
-	if err != nil && !os.IsNotExist(err) {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	tf, err := os.Create(path)
-	defer tf.Close()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	rf := f.Open()
-	defer rf.Close()
-	if n, err := io.Copy(tf, rf); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}else{
-		log.Printf("Write file: %v (%v bytes, chunked: %v, %v chunks)", path, n, f.IsChunked(), f.NumChunks())
-	}
-}
-
-func handleSyncFrom(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-		return
-	}
-	source := r.FormValue("source")
-	if err := syncFile(storage, source); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-func syncFile(fileStorage cafs.FileStorage, source string) error {
-	log.Printf("Sync from %v", source)
-	if file, err := httpsync.SyncFrom(context.Background(), fileStorage, http.DefaultClient, source, "synced from "+source); err != nil {
-		return err
-	} else {
-		log.Printf("Successfully received %v (%v bytes)", file.Key(), file.Size())
-		file.Dispose()
-	}
-	return nil
+	cmd.Service(addr, list)
 }
