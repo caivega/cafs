@@ -54,7 +54,11 @@ func main() {
 	}
 
 	http.HandleFunc("/load", handleLoad)
+	http.HandleFunc("/save", handleSave)
 	http.HandleFunc("/sync", handleSyncFrom)
+	http.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
+		storage.DumpStatistics(cafs.NewWriterPrinter(w))
+	})
 	http.HandleFunc("/stackdump", func(w http.ResponseWriter, r *http.Request) {
 		name := r.FormValue("name")
 		if len(name) == 0 {
@@ -117,6 +121,52 @@ func handleLoad(w http.ResponseWriter, r *http.Request) {
 	path := r.FormValue("path")
 	if err := loadFile(storage, path); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func handleSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	hash := r.FormValue("hash")
+	path := r.FormValue("path")
+
+	key, err := cafs.ParseKey(hash)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	f, err := storage.Get(key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("Load data: %v (chunked: %v, %v chunks)", path, f.IsChunked(), f.NumChunks())
+
+	_, err = os.Stat(path)
+	if err == nil {
+		http.Error(w, path + " exists", http.StatusInternalServerError)
+		return
+	}
+	if err != nil && !os.IsNotExist(err) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	tf, err := os.Create(path)
+	defer tf.Close()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rf := f.Open()
+	defer rf.Close()
+	if n, err := io.Copy(tf, rf); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}else{
+		log.Printf("Write file: %v (%v bytes, chunked: %v, %v chunks)", path, n, f.IsChunked(), f.NumChunks())
 	}
 }
 
