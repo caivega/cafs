@@ -18,10 +18,12 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
+	"path"
 	"runtime/pprof"
 
 	"github.com/indyjo/cafs"
@@ -31,8 +33,11 @@ import (
 
 var storage cafs.FileStorage = ram.NewRamStorage(1 << 30)
 var fileHandlers = make(map[string]*httpsync.FileHandler)
+var dataDir = "./"
 
-func Service(addr string, preloads []string) {
+func Service(addr string, dir string, preloads []string) {
+	dataDir = dir
+
 	for _, preload := range preloads {
 		if _, err := loadFile(preload); err != nil {
 			log.Fatalf("Error loading '[%v]: %v", preload, err)
@@ -42,6 +47,8 @@ func Service(addr string, preloads []string) {
 	http.HandleFunc("/load", handleLoad)
 	http.HandleFunc("/save", handleSave)
 	http.HandleFunc("/sync", handleSync)
+	http.HandleFunc("/upload", handleUpload)
+	http.HandleFunc("/download", handleDownload)
 	http.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
 		storage.DumpStatistics(cafs.NewWriterPrinter(w))
 	})
@@ -71,6 +78,57 @@ func Service(addr string, preloads []string) {
 	err := http.ListenAndServe(addr, nil)
 	if err != nil {
 		log.Fatalf("Error in ListenAndServe: %v", err)
+	}
+}
+
+func handleUpload(w http.ResponseWriter, r *http.Request) {
+	r.ParseMultipartForm(32 << 20)
+	file, handler, err := r.FormFile("file")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer file.Close()
+
+	name := path.Join(dataDir, handler.Filename)
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer f.Close()
+	io.Copy(f, file)
+	fmt.Fprintln(w, name)
+	log.Printf("upload file %s\n", name)
+}
+
+func handleDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileName := r.URL.Query().Get("name")
+	name := path.Join(dataDir, fileName)
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment;filename=%s", fileName))
+	w.Header().Set("Content-Transfer-Encoding", "binary")
+	w.Header().Set("Expires", "0")
+	w.WriteHeader(http.StatusOK)
+
+	tf, err := os.Open(name)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	defer tf.Close()
+
+	if n, err := io.Copy(w, tf); err != nil {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	} else {
+		log.Printf("download file: %v, %d bytes", fileName, n)
 	}
 }
 
